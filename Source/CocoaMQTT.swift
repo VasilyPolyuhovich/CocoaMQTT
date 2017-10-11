@@ -380,6 +380,10 @@ extension CocoaMQTT: WebSocketDelegate {
         reader.headerReady(header)
         let length = data[CocoaMQTTReadTag.length.rawValue]
         reader.lengthReady(length)
+        var payloadData = data
+        payloadData.remove(at: 0)
+        payloadData.remove(at: 1)
+        let payload = payloadData
         reader.payloadReady(data)
     }
 }
