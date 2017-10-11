@@ -188,6 +188,9 @@ open class CocoaMQTT: NSObject, CocoaMQTTClient, CocoaMQTTFrameBufferProtocol {
         self.clientID = clientID
         self.host = host
         self.port = port
+        if let url = URL(string: "\(host):\(port)") {
+            self.socket = WebSocket(url: url)
+        }
         super.init()
         buffer.delegate = self
     }
