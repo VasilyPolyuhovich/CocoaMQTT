@@ -1,17 +1,15 @@
 PODS:
-  - CocoaAsyncSocket (7.5.1):
-    - CocoaAsyncSocket/GCD (= 7.5.1)
-  - CocoaAsyncSocket/GCD (7.5.1)
+  - Starscream (3.0.2)
   - SwiftyTimer (2.0.0)
 
 DEPENDENCIES:
-  - CocoaAsyncSocket
+  - Starscream
   - SwiftyTimer
 
 SPEC CHECKSUMS:
-  CocoaAsyncSocket: e0a7e93b2ffa411592ff87e58524fbbc9b95b4fa
+  Starscream: b512c62f6706421221b5ceb2ba01a9f58aca5bea
   SwiftyTimer: 2efd74b060d69ad4f1496baf5bbedbe132125fcf
 
-PODFILE CHECKSUM: 6225c2b801f18fe792c7be90e43578567b6d8bdb
+PODFILE CHECKSUM: 9356c4bae22d118374551374fe068d0260936986
 
-COCOAPODS: 1.2.0
+COCOAPODS: 1.4.0.beta.1

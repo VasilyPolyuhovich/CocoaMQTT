@@ -7,9 +7,8 @@
 //
 
 import Foundation
-import CocoaAsyncSocket
 import SwiftyTimer
-
+import Starscream
 
 /**
  * QOS
@@ -85,7 +84,7 @@ protocol CocoaMQTTClient {
     var keepAlive: UInt16 {get set}
     var willMessage: CocoaMQTTWill? {get set}
 
-    func connect() -> Bool
+    func connect(with completion: @escaping (Bool, Error?)->Void)
     func disconnect()
     func ping()
     
@@ -170,7 +169,7 @@ open class CocoaMQTT: NSObject, CocoaMQTTClient, CocoaMQTTFrameBufferProtocol {
     
     // ssl
     open var enableSSL = false
-    open var sslSettings: [String: NSObject]?
+    open var sslSecurity: SSLSecurity?
     open var allowUntrustCACertificate = false
     
     // subscribed topics. (dictionary structure -> [msgid: [topicString: QoS]])
@@ -180,7 +179,7 @@ open class CocoaMQTT: NSObject, CocoaMQTTClient, CocoaMQTTFrameBufferProtocol {
 
     // global message id
     var gmid: UInt16 = 1
-    var socket = GCDAsyncSocket()
+    var socket: WebSocket?
     var reader: CocoaMQTTReader?
     
 
@@ -197,8 +196,8 @@ open class CocoaMQTT: NSObject, CocoaMQTTClient, CocoaMQTTFrameBufferProtocol {
         aliveTimer?.invalidate()
         autoReconnTimer?.invalidate()
         
-        socket.delegate = nil
-        socket.disconnect()
+        socket?.delegate = nil
+        socket?.disconnect()
     }
     
     // MARK: CocoaMQTTFrameBufferProtocol
@@ -208,7 +207,8 @@ open class CocoaMQTT: NSObject, CocoaMQTTClient, CocoaMQTTFrameBufferProtocol {
 
     fileprivate func send(_ frame: CocoaMQTTFrame, tag: Int = 0) {
         let data = frame.data()
-        socket.write(Data(bytes: data, count: data.count), withTimeout: -1, tag: tag)
+        socket?.write(data: Data(bytes: data, count: data.count))
+        //socket.write(Data(bytes: data, count: data.count), withTimeout: -1, tag: tag)
     }
 
     fileprivate func sendConnectFrame() {
@@ -246,17 +246,23 @@ open class CocoaMQTT: NSObject, CocoaMQTTClient, CocoaMQTTFrameBufferProtocol {
         send(CocoaMQTTFramePubAck(type: type, msgid: msgid))
     }
 
-    @discardableResult
-    open func connect() -> Bool {
-        socket.setDelegate(self, delegateQueue: dispatchQueue)
+    open func connect(with completion: @escaping (Bool, Error?)->Void) {
+        guard let socket = socket else {
+            completion(false, nil)
+            return
+        }
+        socket.delegate = self
         reader = CocoaMQTTReader(socket: socket, delegate: self)
-        do {
-            try socket.connect(toHost: self.host, onPort: self.port)
-            connState = .connecting
-            return true
-        } catch let error as NSError {
-            printError("socket connect error: \(error.description)")
-            return false
+        socket.connect()
+        connState = .connecting
+        socket.onDisconnect = { [weak self] error in
+            guard let error = error else { return }
+            self?.connState = .disconnected
+            completion(false, error)
+        }
+        socket.onConnect = { [weak self] in
+            self?.connState = .connected
+            completion(true, nil)
         }
     }
     
@@ -270,7 +276,7 @@ open class CocoaMQTT: NSObject, CocoaMQTTClient, CocoaMQTTFrameBufferProtocol {
     /// disconnect unexpectedly
     open func internal_disconnect() {
         send(CocoaMQTTFrame(type: CocoaMQTTFrameType.disconnect), tag: -0xE0)
-        socket.disconnect()
+        socket?.disconnect()
     }
     
     open func ping() {
@@ -326,77 +332,55 @@ open class CocoaMQTT: NSObject, CocoaMQTTClient, CocoaMQTTFrameBufferProtocol {
     }
 }
 
-// MARK: - GCDAsyncSocketDelegate
-extension CocoaMQTT: GCDAsyncSocketDelegate {
-    public func socket(_ sock: GCDAsyncSocket, didConnectToHost host: String, port: UInt16) {
-        printDebug("connected to \(host) : \(port)")
-        
-        #if TARGET_OS_IPHONE
+extension CocoaMQTT: WebSocketDelegate {
+    public func websocketDidConnect(socket: WebSocketClient) {
             if backgroundOnSocket {
-                sock.performBlock { sock.enableBackgroundingOnSocket() }
+                //
             }
-        #endif
-        
+
         if enableSSL {
-            if sslSettings == nil {
-                if allowUntrustCACertificate {
-                    sock.startTLS([GCDAsyncSocketManuallyEvaluateTrust: true as NSObject]) }
-                else {
-                    sock.startTLS(nil)
-                }
-            } else {
-                sslSettings![GCDAsyncSocketManuallyEvaluateTrust as String] = NSNumber(value: true)
-                sock.startTLS(sslSettings!)
+            if let sslSecurity = sslSecurity {
+                socket.security = sslSecurity
             }
         } else {
+            socket.disableSSLCertValidation = true
             sendConnectFrame()
         }
     }
-
-    public func socket(_ sock: GCDAsyncSocket, didReceive trust: SecTrust, completionHandler: @escaping (Bool) -> Swift.Void) {
-        printDebug("didReceiveTrust")
-        
-        delegate?.mqtt!(self, didReceive: trust, completionHandler: completionHandler)
-    }
-
-    public func socketDidSecure(_ sock: GCDAsyncSocket) {
-        printDebug("socketDidSecure")
-        sendConnectFrame()
-    }
-
-    public func socket(_ sock: GCDAsyncSocket, didWriteDataWithTag tag: Int) {
-        printDebug("Socket write message with tag: \(tag)")
-    }
-
-    public func socket(_ sock: GCDAsyncSocket, didRead data: Data, withTag tag: Int) {
-        let etag = CocoaMQTTReadTag(rawValue: tag)!
-        var bytes = [UInt8]([0])
-        switch etag {
-        case CocoaMQTTReadTag.header:
-            data.copyBytes(to: &bytes, count: 1)
-            reader!.headerReady(bytes[0])
-        case CocoaMQTTReadTag.length:
-            data.copyBytes(to: &bytes, count: 1)
-            reader!.lengthReady(bytes[0])
-        case CocoaMQTTReadTag.payload:
-            reader!.payloadReady(data)
-        }
-    }
-
-    public func socketDidDisconnect(_ sock: GCDAsyncSocket, withError err: Error?) {
+    
+    public func websocketDidDisconnect(socket: WebSocketClient, error: Error?) {
         socket.delegate = nil
         connState = .disconnected
-        delegate?.mqttDidDisconnect(self, withError: err)
-
+        delegate?.mqttDidDisconnect(self, withError: error)
+        
         DispatchQueue.main.async {
             self.autoReconnTimer?.invalidate()
             if !self.disconnectExpectedly && self.autoReconnect && self.autoReconnectTimeInterval > 0 {
                 self.autoReconnTimer = Timer.every(Double(self.autoReconnectTimeInterval).seconds, { [weak self] (timer: Timer) in
                     printDebug("try reconnect")
-                    self?.connect()
+                    self?.connect(with: { _, error in
+                        guard let error = error else {return}
+                        printError("reconnect error: \(error)")
+                    })
                 })
             }
         }
+    }
+    
+    public func websocketDidReceiveMessage(socket: WebSocketClient, text: String) {
+        
+    }
+    
+    public func websocketDidReceiveData(socket: WebSocketClient, data: Data) {
+        guard let reader = reader else { return }
+        let header = data[CocoaMQTTReadTag.header.rawValue]
+        reader.headerReady(header)
+        let length = data[CocoaMQTTReadTag.length.rawValue]
+        reader.lengthReady(length)
+        var payload = data[CocoaMQTTReadTag.payload.rawValue]
+        var payloadData = Data()
+        payloadData.append(&payload, count: 1)
+        reader.payloadReady(payloadData)
     }
 }
 
@@ -528,7 +512,7 @@ extension CocoaMQTT: CocoaMQTTReaderDelegate {
 }
 
 class CocoaMQTTReader {
-    private var socket: GCDAsyncSocket
+    private var socket: WebSocket
     private var header: UInt8 = 0
     private var length: UInt = 0
     private var data: [UInt8] = []
@@ -536,7 +520,7 @@ class CocoaMQTTReader {
     private var delegate: CocoaMQTTReaderDelegate
     private var timeout = 30000
 
-    init(socket: GCDAsyncSocket, delegate: CocoaMQTTReaderDelegate) {
+    init(socket: WebSocket, delegate: CocoaMQTTReaderDelegate) {
         self.socket = socket
         self.delegate = delegate
     }
@@ -576,15 +560,15 @@ class CocoaMQTTReader {
 
     private func readHeader() {
         reset()
-        socket.readData(toLength: 1, withTimeout: -1, tag: CocoaMQTTReadTag.header.rawValue)
+        //socket.readData(toLength: 1, withTimeout: -1, tag: CocoaMQTTReadTag.header.rawValue)
     }
 
     private func readLength() {
-        socket.readData(toLength: 1, withTimeout: TimeInterval(timeout), tag: CocoaMQTTReadTag.length.rawValue)
+        //socket.readData(toLength: 1, withTimeout: TimeInterval(timeout), tag: CocoaMQTTReadTag.length.rawValue)
     }
 
     private func readPayload() {
-        socket.readData(toLength: length, withTimeout: TimeInterval(timeout), tag: CocoaMQTTReadTag.payload.rawValue)
+        //socket.readData(toLength: length, withTimeout: TimeInterval(timeout), tag: CocoaMQTTReadTag.payload.rawValue)
     }
 
     private func frameReady() {
