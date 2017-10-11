@@ -384,7 +384,7 @@ extension CocoaMQTT: WebSocketDelegate {
         payloadData.remove(at: CocoaMQTTReadTag.header.rawValue)
         payloadData.remove(at: CocoaMQTTReadTag.length.rawValue)
         let payload = payloadData
-        reader.payloadReady(data)
+        reader.payloadReady(payload)
     }
 }
 
